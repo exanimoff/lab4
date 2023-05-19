@@ -1,43 +1,36 @@
 import java.util.Random;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
-
 public class Main {
     private static final int MIN_FLOOR = 1;
-    private static final int MAX_FLOOR = 10;
+    private static final int MAX_FLOOR = 20;
     private static final int NUM_ELEVATORS = 2;
     private static final long GENERATOR_INTERVAL_MS = 2000;
 
     private static BlockingQueue<Request> requests = new LinkedBlockingQueue<>();
+    private static ExecutorService elevatorExecutor = Executors.newFixedThreadPool(NUM_ELEVATORS);
 
     public static void main(String[] args) {
         Thread managerThread = new Thread(Main::runManager);
         Thread generatorThread = new Thread(Main::runGenerator);
-        Thread[] elevatorThreads = new Thread[NUM_ELEVATORS];
-        Elevator[] elevators = new Elevator[NUM_ELEVATORS];
-
-        for (int i = 0; i < NUM_ELEVATORS; i++) {
-            elevators[i] = new Elevator();
-            elevatorThreads[i] = new Thread(() -> runElevator(elevators[i]));
-        }
 
         managerThread.start();
         generatorThread.start();
-        for (Thread thread : elevatorThreads) {
-            thread.start();
-        }
 
         // Ждем, пока все потоки завершатся
         try {
             managerThread.join();
             generatorThread.join();
-            for (Thread thread : elevatorThreads) {
-                thread.join();
-            }
+            elevatorExecutor.shutdown();
+            elevatorExecutor.awaitTermination(Long.MAX_VALUE, TimeUnit.MILLISECONDS);
         } catch (InterruptedException e) {
             e.printStackTrace();
         }
     }
+
+    private static AtomicInteger nextElevatorIndex = new AtomicInteger(0);
 
     private static void runManager() {
         Elevator[] elevators = new Elevator[NUM_ELEVATORS];
@@ -48,8 +41,11 @@ public class Main {
         while (true) {
             try {
                 Request request = requests.take();
-                Elevator elevator = findClosestElevator(request, elevators);
+                int elevatorIndex = nextElevatorIndex.getAndIncrement() % NUM_ELEVATORS;
+                Elevator elevator = elevators[elevatorIndex];
                 elevator.addRequest(request);
+
+                elevatorExecutor.submit(() -> runElevator(elevator));
             } catch (InterruptedException e) {
                 e.printStackTrace();
             }
@@ -83,6 +79,10 @@ public class Main {
     private static void runElevator(Elevator elevator) {
         while (true) {
             Request request = elevator.getNextRequest();
+            if (request == null) {
+                continue; // Если нет запросов, переходим к следующей итерации
+            }
+
             int currentFloor = elevator.getCurrentFloor();
             int targetFloor = request.getCallingFloor();
             Direction direction = request.getDirection();
@@ -90,7 +90,7 @@ public class Main {
             if (currentFloor < targetFloor) {
                 for (int i = currentFloor + 1; i <= targetFloor; i++) {
                     elevator.setCurrentFloor(i);
-                    System.out.println("Elevator " + Thread.currentThread().getId() + " moving UP to floor " + i);
+                    System.out.println("Elevator " + elevator.getId() + " moving UP to floor " + i);
                     try {
                         Thread.sleep(1000);
                     } catch (InterruptedException e) {
@@ -100,7 +100,7 @@ public class Main {
             } else if (currentFloor > targetFloor) {
                 for (int i = currentFloor - 1; i >= targetFloor; i--) {
                     elevator.setCurrentFloor(i);
-                    System.out.println("Elevator " + Thread.currentThread().getId() + " moving DOWN to floor " + i);
+                    System.out.println("Elevator " + elevator.getId() + " moving DOWN to floor " + i);
                     try {
                         Thread.sleep(1000);
                     } catch (InterruptedException e) {
@@ -109,7 +109,7 @@ public class Main {
                 }
             }
 
-            System.out.println("Elevator " + Thread.currentThread().getId() + " arrived at floor " + targetFloor);
+            System.out.println("Elevator " + elevator.getId() + " arrived at floor " + targetFloor);
             elevator.removeRequest(request);
         }
     }
@@ -133,8 +133,19 @@ public class Main {
 }
 
 class Elevator {
+    private static int nextId = 1;
+
+    private int id;
     private int currentFloor;
     private BlockingQueue<Request> requests = new LinkedBlockingQueue<>();
+
+    public Elevator() {
+        this.id = nextId++;
+    }
+
+    public int getId() {
+        return id;
+    }
 
     public int getCurrentFloor() {
         return currentFloor;
